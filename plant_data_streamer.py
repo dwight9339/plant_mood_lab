@@ -20,6 +20,7 @@ from pythonosc import udp_client
 
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.graphicsItems.LegendItem import ItemSample
 from scipy.signal import find_peaks, hilbert  # pip install scipy
 
 # ------------------------------------------------------------------ OSC helpers
@@ -133,6 +134,11 @@ def compute_features(ts: np.ndarray, fs: float = 1.0) -> dict:
         "velocity_pattern": vel_pattern,
     }
 
+class InfiniteLineLegendItem(ItemSample):
+    def __init__(self, line):
+        dummy_item = pg.PlotDataItem(pen=line.pen)
+        super().__init__(dummy_item)
+
 # ------------------------------------------------------------- main window
 
 class PlantWindow(QtWidgets.QMainWindow):
@@ -162,8 +168,13 @@ class PlantWindow(QtWidgets.QMainWindow):
 
         # ——— GUI ———
         self.plot = pg.PlotWidget(title="Raw Signal + RollMean64")
-        self.curve = self.plot.plot(pen=pg.mkPen("#2ecc71", width=2))
-        self.roll_curve = self.plot.plot(pen=pg.mkPen("#3498db", width=2))
+        self.legend = self.plot.getPlotItem().addLegend(offset=(10, 10))
+        self.curve = self.plot.plot(pen=pg.mkPen("#2ecc71", width=2), name="Raw Signal")
+        self.roll_curve = self.plot.plot(pen=pg.mkPen("#3498db", width=2), name="RollMean64")
+        self.mean_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen("#e67e22", width=1, style=QtCore.Qt.DashLine), name="Mean")
+        self.plot.addItem(self.mean_line)
+        self.legend.addItem(InfiniteLineLegendItem(self.mean_line), "Mean")
+
         self.plot.showGrid(False, False)  # remove grid
         self.plot.setLabel("left", "Value")
         self.plot.setLabel("bottom", "Samples")
@@ -173,6 +184,7 @@ class PlantWindow(QtWidgets.QMainWindow):
 
         # Auxiliary plot (timeline of derived features)
         self.aux_plot = pg.PlotWidget(title="Peaks & Velocity Pattern")
+        self.aux_plot.addLegend(offset=(10, 10))
         self.aux_plot.setXLink(self.plot)
         self.aux_plot.setLabel("left", "Feature map")
         self.aux_plot.setLabel("bottom", "Samples")
@@ -180,11 +192,11 @@ class PlantWindow(QtWidgets.QMainWindow):
         self.aux_plot.showGrid(False, False)  # remove grid
 
         # Items for auxiliary plot
-        # Purple stepped velocity‑pattern (drawn around baseline 0.5)
-        self.vel_curve = pg.PlotDataItem(pen=pg.mkPen("#9b59b6", width=2), stepMode="center")
-        self.peaks_scatter = pg.ScatterPlotItem(brush=pg.mkBrush("#e74c3c"), size=6)
+        self.vel_curve = pg.PlotDataItem(pen=pg.mkPen("#9b59b6", width=2), stepMode="center", name="Velocity Pattern")
+        self.peaks_scatter = pg.ScatterPlotItem(brush=pg.mkBrush("#e74c3c"), size=6, name="Peaks")
         self.aux_plot.addItem(self.vel_curve)
         self.aux_plot.addItem(self.peaks_scatter)
+
 
         # Layout (raw plot 3× height of aux plot)
         central = QtWidgets.QWidget()
@@ -235,6 +247,8 @@ class PlantWindow(QtWidgets.QMainWindow):
 
         # ------------ features + OSC ------------
         feat = compute_features(window_vals, fs=self.args.sampling_rate)
+
+        self.mean_line.setPos(feat.get("mean", 0.0))
 
         # GUI text – show only scalars
         lines = [f"{k}: {v:.3f}" for k, v in feat.items() if not _is_sequence(v)]
