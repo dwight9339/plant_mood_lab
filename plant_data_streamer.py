@@ -163,6 +163,7 @@ def compute_features(ts: np.ndarray, fs: float = 1.0) -> dict:
         "pitch_bin": pitch_bin,
         "hilbert_envelope": hilb_env,
         "velocity_pattern": vel_pattern,
+        "window_size": ts.size,
     }
 
 class InfiniteLineLegendItem(ItemSample):
