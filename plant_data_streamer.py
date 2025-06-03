@@ -17,6 +17,7 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 from pythonosc import udp_client
+from collections import deque
 
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
@@ -75,6 +76,27 @@ def _velocity_pattern(vel: np.ndarray, n_bins: int = 16) -> np.ndarray:
         flags.append(float((chunk > thr).mean() > 0.25))
     return np.array(flags)
 
+class MetaScaler:
+    def __init__(self, buffer_size=300):
+        self.buffer = deque(maxlen=buffer_size)
+
+    def update(self, val):
+        self.buffer.append(val)
+        if len(self.buffer) < 2:
+            return 0.0
+        min_val = min(self.buffer)
+        max_val = max(self.buffer)
+        return (val - min_val) / (max_val - min_val + 1e-6)
+
+scalers = {
+    "mean": MetaScaler(),
+    "std": MetaScaler(),
+    "roll64": MetaScaler(),
+    "mean_vel": MetaScaler(),
+    "rms_energy": MetaScaler(),
+    "entropy": MetaScaler(),
+    "hilb_env": MetaScaler()
+}
 
 def compute_features(ts: np.ndarray, fs: float = 1.0) -> dict:
     """Return a handful of scalar & vector features for downstream use."""
@@ -84,14 +106,21 @@ def compute_features(ts: np.ndarray, fs: float = 1.0) -> dict:
     ts_center = ts - ts.mean()
     vel = np.diff(ts, prepend=ts[0])
 
-    mean = float(ts.mean())
-    std = float(ts.std())
-    roll64 = float(_rolling_mean(ts, 64)[-1])
-    mean_vel = float(vel.mean())
-    rms_energy = float(np.sqrt((ts ** 2).mean()))
+    raw_mean = float(ts.mean())
+    mean = scalers["mean"].update(raw_mean)
+    raw_std = float(ts.std())
+    std = scalers["std"].update(raw_std)
+    raw_roll64 = float(_rolling_mean(ts, 64)[-1])
+    roll64 = scalers["roll64"].update(raw_roll64)
+    raw_mean_vel = float(vel.mean())
+    mean_vel = scalers["mean_vel"].update(raw_mean_vel)
+    raw_rms_energy = float(np.sqrt((ts ** 2).mean()))
+    rms_energy = scalers["rms_energy"].update(raw_rms_energy)
 
-    hist, _ = np.histogram(ts, bins=10, density=True)
-    entropy = float(-np.sum((hist + 1e-12) * np.log2(hist + 1e-12)))
+    hist, _ = np.histogram(ts, bins=10, density=False)
+    hist = hist / hist.sum()
+    raw_entropy = float(-np.sum((hist + 1e-12) * np.log2(hist + 1e-12)))
+    entropy = scalers["entropy"].update(raw_entropy)
 
     peaks, _ = find_peaks(ts)
     peak_intervals = np.diff(peaks) if peaks.size > 1 else np.array([])
@@ -108,7 +137,8 @@ def compute_features(ts: np.ndarray, fs: float = 1.0) -> dict:
         spectral_centroid = 0.0
         pitch_bin = 0.0
     else:
-        spectral_centroid = float((freqs[1:] * fft_mag[1:]).sum() / fft_mag[1:].sum())
+        raw_spectral_centroid = float((freqs[1:] * fft_mag[1:]).sum() / fft_mag[1:].sum())
+        spectral_centroid = min(max(raw_spectral_centroid / (fs / 2), 0.0), 1.0)
         dominant_freq = freqs[1:][np.argmax(fft_mag[1:])]
         if dominant_freq > 0:
             midi_note = 69 + 12 * np.log2(dominant_freq / 440.0)
@@ -116,7 +146,8 @@ def compute_features(ts: np.ndarray, fs: float = 1.0) -> dict:
         else:
             pitch_bin = 0
 
-    hilb_env = float(np.abs(hilbert(ts))[-1])
+    raw_hilb_env = float(np.abs(hilbert(ts))[-1])
+    hilb_env = scalers["hilb_env"].update(raw_hilb_env)
     vel_pattern = _velocity_pattern(vel, 16)
 
     return {
@@ -138,6 +169,7 @@ class InfiniteLineLegendItem(ItemSample):
     def __init__(self, line):
         dummy_item = pg.PlotDataItem(pen=line.pen)
         super().__init__(dummy_item)
+
 
 # ------------------------------------------------------------- main window
 
