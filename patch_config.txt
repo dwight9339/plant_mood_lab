@@ -1,0 +1,4 @@
+tension 64 64 64;
+stability 64 64 64 64;
+excitement 64 64;
+pulse 64 64 64 64;
