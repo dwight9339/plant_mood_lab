@@ -192,7 +192,9 @@ class PlantWindow(QtWidgets.QMainWindow):
             self.values = df[args.value_col].to_numpy(dtype=float)
         elif args.api:
             try:
-                r = requests.get(args.api, timeout=2)
+                url = self.args.api + f"?window={int(self.args.window)}"
+                print(url)
+                r = requests.get(url, timeout=2)
                 r.raise_for_status()
                 records = r.json()
                 self.times = np.array([
@@ -273,7 +275,8 @@ class PlantWindow(QtWidgets.QMainWindow):
         # Option 1: API mode – fetch fresh data
         if self.args.api:
             try:
-                r = requests.get(self.args.api, timeout=2)
+                url = self.args.api + f"?window={int(self.args.window)}"
+                r = requests.get(url, timeout=2)
                 r.raise_for_status()
                 records = r.json()
                 times = np.array([
