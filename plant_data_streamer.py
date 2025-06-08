@@ -13,6 +13,7 @@ import argparse
 from pathlib import Path
 import sys
 from typing import Sequence
+import requests
 
 import numpy as np
 import pandas as pd
@@ -186,9 +187,21 @@ class PlantWindow(QtWidgets.QMainWindow):
 
         # Data source
         if args.csv:
-            df = pd.read_csv(args.csv, parse_dates=["last_changed"])
-            self.times = pd.to_datetime(df["last_changed"]).values.astype("int64") / 1e9
-            self.values = df["state"].to_numpy(dtype=float)
+            df = pd.read_csv(args.csv, parse_dates=[args.time_col])
+            self.times = pd.to_datetime(df[args.time_col]).values.astype("int64") / 1e9
+            self.values = df[args.value_col].to_numpy(dtype=float)
+        elif args.api:
+            try:
+                r = requests.get(args.api, timeout=2)
+                r.raise_for_status()
+                records = r.json()
+                self.times = np.array([
+                    pd.to_datetime(row[args.time_col]).value / 1e9
+                    for row in records
+                ])
+                self.values = np.array([float(row[args.value_col]) for row in records])
+            except Exception as e:
+                print(f"Failed to fetch from API: {e}")
         else:
             self.times = np.array([])
             self.values = np.array([])
@@ -256,11 +269,34 @@ class PlantWindow(QtWidgets.QMainWindow):
 
     # ——— main loop ———
     def update_stream(self):
-        if not self.args.csv:
-            return
-        if not self.paused:
-            self.cursor += int(self.args.step * self.args.sampling_rate)
+        # --------------------------------------
+        # Option 1: API mode – fetch fresh data
+        if self.args.api:
+            try:
+                r = requests.get(self.args.api, timeout=2)
+                r.raise_for_status()
+                records = r.json()
+                times = np.array([
+                    pd.to_datetime(row[self.args.time_col]).value / 1e9
+                    for row in records
+                ])
+                values = np.array([float(row[self.args.value_col]) for row in records])
+            except Exception as e:
+                print(f"[API fetch error] {e}")
+                return
 
+            self.times = times
+            self.values = values
+            self.cursor = max(0, len(values) - int(self.args.window * self.args.sampling_rate))
+
+        # --------------------------------------
+        # Option 2: CSV mode – walk forward through file
+        elif self.args.csv:
+            if not self.paused:
+                self.cursor += int(self.args.step * self.args.sampling_rate)
+
+        # --------------------------------------
+        # Get current window
         win_samps = int(self.args.window * self.args.sampling_rate)
         start = max(0, self.cursor)
         end = min(start + win_samps, len(self.values))
@@ -280,32 +316,29 @@ class PlantWindow(QtWidgets.QMainWindow):
 
         # ------------ features + OSC ------------
         feat = compute_features(window_vals, fs=self.args.sampling_rate)
-
         self.mean_line.setPos(feat.get("mean", 0.0))
 
-        # GUI text – show only scalars
         lines = [f"{k}: {v:.3f}" for k, v in feat.items() if not _is_sequence(v)]
-        self.text.setText("\n".join(lines[:8]))  # show first 8 to avoid clutter
+        self.text.setText("\n".join(lines[:8]))
 
         send_features(self.osc, feat)
         if self.args.send_raw:
             send_window(self.osc, window_vals)
 
         # ------------ auxiliary plot ------------
-        # Peaks (red dots at y=0.9)
         peaks, _ = find_peaks(window_vals)
         if peaks.size:
             self.peaks_scatter.setData(peaks, np.full_like(peaks, 0.9))
         else:
             self.peaks_scatter.setData([], [])
 
-        # Velocity pattern (purple stepped trace centred at 0.5)
         vel_pattern = feat.get("velocity_pattern", np.zeros(16))
         n_bins = vel_pattern.size
         if n_bins:
-            bin_edges = np.linspace(0, window_vals.size, n_bins + 1)  # len = n_bins + 1
-            vel_y = 0.5 + 0.4 * vel_pattern  # inactive → 0.5, active → 0.9
+            bin_edges = np.linspace(0, window_vals.size, n_bins + 1)
+            vel_y = 0.5 + 0.4 * vel_pattern
             self.vel_curve.setData(bin_edges, vel_y)
+
 
 # ----------------------------------------------------------- CLI
 
@@ -316,10 +349,13 @@ def cli():
     p.add_argument("--window", type=float, default=300.0, help="Window length (s)")
     p.add_argument("--step", type=float, default=5.0, help="Window hop (s) per tick")
     p.add_argument("--tick", type=float, default=1.0, help="GUI/OSC update rate (s)")
+    p.add_argument("--api", type=str, help="URL to fetch mock or live signal data")
     p.add_argument("--sampling_rate", type=float, default=1.0, help="Samples per second")
     p.add_argument("--osc_host", type=str, default="127.0.0.1", help="OSC host")
     p.add_argument("--osc_port", type=int, default=8000, help="OSC port")
     p.add_argument("--send_raw", action="store_true", help="Also stream /window/data")
+    p.add_argument("--value_col", default="value", help="Key for signal value")
+    p.add_argument("--time_col", default="time", help="Key for timestamp")
     args = p.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
